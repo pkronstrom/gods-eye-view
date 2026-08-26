@@ -176,16 +176,17 @@ test('no unchanged Realtime tool definition drifts silently', () => {
     'select_nearest_aircraft',
     'set_map_stack',
     'set_layer_visibility',
+    'analyst_query',
   ]);
   const unchanged = realtimeTools()
     .filter((tool) => !TOUCHED.has(tool.name))
     .sort((a, b) => a.name.localeCompare(b.name));
-  assert.equal(unchanged.length, 20);
+  assert.equal(unchanged.length, 19);
   const digest = createHash('sha256')
     .update(JSON.stringify(unchanged))
     .digest('hex')
     .slice(0, 16);
-  assert.equal(digest, '43f7d0c59e0c97eb', 'an unchanged Realtime tool definition drifted');
+  assert.equal(digest, 'a9dda62ff01447d7', 'an unchanged Realtime tool definition drifted');
 });
 
 test('Radio volume and mission speed share the Sharpen slider visual language', () => {

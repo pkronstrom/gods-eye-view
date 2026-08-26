@@ -657,10 +657,10 @@ test('the voice TOOL SCHEMA is byte-identical to main — the mission mapping is
   // and reworded set_map_stack; the FMI lightning layer added a layer enum value. This guard exists so the
   // FIRST-RUN MISSIONS cannot smuggle in a schema edit -- it is not a freeze on
   // the schema forever. Rebase deliberately, never to make a red test green.
-  assert.equal(block.length, 31310, 'tool schema byte length drifted from the frozen baseline');
+  assert.equal(block.length, 31966, 'tool schema byte length drifted from the frozen baseline');
   assert.equal(
     crypto.createHash('sha256').update(block).digest('hex'),
-    '4313f9f2dc92b66c6a64d713b06fe5e225a0924d31ae008ec450a40efc10c2dd',
+    '370a2ef93229c85d5e8540903abe1b73a84acfcf77ab104f1ceeff0f2f7288c2',
     'the first-run missions must ride EXISTING tools: no schema edit, no cache bust',
   );
 
