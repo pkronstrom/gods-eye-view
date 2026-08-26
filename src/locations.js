@@ -341,6 +341,95 @@ export function findPoiByName(query) {
 /** Distinguishes an authority veto from a genuine not-found result. */
 export const CANCELLED_SEARCH = Object.freeze({ cancelled: true });
 
+// Nominatim place classes mapped onto the Google geocode types that
+// geocodeNavigationMode() already understands, so the keyless path reuses the
+// same framing policy rather than inventing a second one.
+const NOMINATIM_TYPE_MAP = {
+  country: ['country'],
+  state: ['administrative_area_level_1'],
+  region: ['administrative_area_level_1'],
+  province: ['administrative_area_level_1'],
+  county: ['administrative_area_level_2'],
+  city: ['locality'],
+  town: ['locality'],
+  village: ['locality'],
+  municipality: ['locality'],
+  suburb: ['sublocality'],
+  neighbourhood: ['neighborhood'],
+  postcode: ['postal_code'],
+  road: ['route'],
+  park: ['park'],
+  aerodrome: ['airport'],
+  stadium: ['stadium'],
+  university: ['university'],
+  peak: ['natural_feature'],
+  water: ['natural_feature'],
+  bay: ['natural_feature'],
+};
+
+/**
+ * Keyless geocode via OpenStreetMap Nominatim, used when no Google Maps key is
+ * configured. Covers the common case — places, streets, landmarks — but has no
+ * viewport bias and no Places recovery, so ambiguous names ("Sixth Street") may
+ * land in the wrong city. Nominatim asks for <=1 req/sec; search is user-driven
+ * and well under that.
+ */
+async function searchAndFlyToKeyless(viewer, query, options = {}) {
+  const beforeFly = typeof options.beforeFly === 'function' ? options.beforeFly : null;
+  const mayFly = () => beforeFly === null || beforeFly() !== false;
+
+  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(query)}`;
+  let hit = null;
+  try {
+    const response = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!response.ok) return null;
+    hit = (await response.json())?.[0] || null;
+  } catch (error) {
+    console.warn('[Geocode] Nominatim lookup failed:', error);
+    return null;
+  }
+  if (!hit) return null;
+
+  const lat = Number(hit.lat);
+  const lng = Number(hit.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+  const label = hit.display_name || query;
+  const types = NOMINATIM_TYPE_MAP[hit.addresstype] || NOMINATIM_TYPE_MAP[hit.type] || [];
+  const navigationMode = geocodeNavigationMode(types);
+  const duration = finitePositive(options.duration) || 3.0;
+  const requestedRange = finitePositive(options.range);
+
+  // boundingbox arrives as [south, north, west, east] strings.
+  const box = Array.isArray(hit.boundingbox) ? hit.boundingbox.map(Number) : null;
+  const viewport = box && box.every(Number.isFinite)
+    ? { southwest: { lat: box[0], lng: box[2] }, northeast: { lat: box[1], lng: box[3] } }
+    : null;
+
+  if (viewport && !requestedRange && !options.forceClose
+      && (shouldFrameGeocodeViewport(navigationMode) || options.viewMode === 'overview')) {
+    const flight = flyToViewportBounds(viewer, viewport, {
+      duration,
+      navigationMode,
+      beforeFly: mayFly,
+      onStart: options.onStart,
+      onComplete: options.onComplete,
+      onCancel: options.onCancel,
+    });
+    if (flight) return { label, navigationMode };
+  }
+
+  if (!mayFly()) return CANCELLED_SEARCH;
+  flyToLandmark(viewer, lat, lng, {
+    range: requestedRange,
+    duration,
+    onStart: options.onStart,
+    onComplete: options.onComplete,
+    onCancel: options.onCancel,
+  });
+  return { label, navigationMode };
+}
+
 /**
  * Geocode a place name using Google Geocoding API, then fly there at a scale
  * appropriate to the request. Countries and cities use their viewport by
@@ -348,7 +437,7 @@ export const CANCELLED_SEARCH = Object.freeze({ cancelled: true });
  */
 export async function searchAndFlyTo(viewer, query, options = {}) {
   const apiKey = window.__GOOGLE_MAPS_API_KEY__ || import.meta.env.GOOGLE_MAPS_API_KEY;
-  if (!apiKey) throw new Error('No Google Maps API key available for geocoding');
+  if (!apiKey) return searchAndFlyToKeyless(viewer, query, options);
 
   const beforeFly = typeof options.beforeFly === 'function' ? options.beforeFly : null;
   const mayFly = () => beforeFly === null || beforeFly() !== false;
