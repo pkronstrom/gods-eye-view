@@ -292,6 +292,15 @@ export function initGevVoicePipeline({
           });
           const answer = await answerResponse.json().catch(() => ({}));
           const spoken = stripMarkdown(answer?.reply);
+          if (answerResponse.ok && !spoken && !failed.length) {
+            // The tools ran but the model had nothing to say -- usually because
+            // the request did not survive transcription, or asks for something
+            // no tool covers. Silence reads as a broken app; say which it is.
+            subtitle.show("No answer for that — try rephrasing", {
+              kind: 'idle',
+              transcript: described.transcript,
+            });
+          }
           if (answerResponse.ok && spoken) {
             subtitle.show(spoken, {
               kind: 'reply',

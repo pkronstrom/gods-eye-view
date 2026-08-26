@@ -7416,6 +7416,23 @@ function normalizeAisTimestamp(value) {
  *
  * @returns {import('vite').Plugin}
  */
+/**
+ * Words this app expects to hear, fed to Whisper as a decoding hint.
+ *
+ * Deliberately a natural sentence rather than a word list -- Whisper's prompt
+ * conditions on style as well as vocabulary, so a comma-separated dump biases
+ * it toward transcribing everything as a list.
+ */
+const GEV_SPEECH_VOCABULARY = [
+  'Commands for a geospatial globe: show me the planes, aircraft and flights;',
+  'track a callsign; military ADS-B contacts; satellites and orbits; the ISS;',
+  'lightning strikes; earthquakes; submarine cables; datacenters; dams;',
+  'road cameras and CCTV; live AIS vessels and ships; active fires;',
+  'Sentinel-2 imagery, OpenStreetMap and the basemap; zoom to the globe;',
+  'thermal, noir and surveillance styles; the HUD and detection overlay;',
+  'Helsinki, Finland, Lithuania, Estonia, Tallinn, Stockholm, Kaliningrad.',
+].join(' ');
+
 function voicePipelineProxy() {
   // Audio is base64 in a JSON body, which inflates it ~33%. 8 MB of transport
   // is roughly 6 MB of audio -- minutes of speech at Opus bitrates, far beyond
@@ -7439,6 +7456,13 @@ function voicePipelineProxy() {
       form.append('file', new Blob([audioBuffer], { type: mimeType || 'audio/webm' }), `speech.${ext}`);
       form.append('model', cfg.stt.model);
       form.append('response_format', 'json');
+      // Domain vocabulary bias. Whisper decodes toward what it expects to hear,
+      // and this app's words are unusual enough to lose: an observed turn came
+      // back as "filter out all the PLACES that are flying towards Finland",
+      // which turned a sensible request into a nonsensical one and left the
+      // model guessing. The prompt is a hint, not a constraint -- it costs
+      // nothing and never blocks a word that was actually said.
+      form.append('prompt', GEV_SPEECH_VOCABULARY);
       const response = await fetch(cfg.stt.url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${cfg.stt.key}` },
