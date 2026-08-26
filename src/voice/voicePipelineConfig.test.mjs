@@ -5,6 +5,7 @@ import {
   VOICE_DEFAULTS,
   buildChatRequest,
   buildFollowUpRequest,
+  isSilenceHallucination,
   normalizeProvider,
   parseToolCalls,
   replyTextFrom,
@@ -275,4 +276,30 @@ test('an unserializable tool result degrades instead of throwing', () => {
     results: [{ id: 'a', name: 'weird', result: cyclic }],
   });
   assert.match(body.messages.find((m) => m.role === 'tool').content, /not serializable/);
+});
+
+test('Whisper silence filler is recognised and discarded', () => {
+  // The observed failure: a wedged recorder uploaded an empty room and Whisper
+  // returned this, which was then answered as though the user had spoken.
+  assert.equal(isSilenceHallucination('thank you thank you'), true);
+  assert.equal(isSilenceHallucination('Thank you.'), true);
+  assert.equal(isSilenceHallucination('Thanks for watching!'), true);
+  assert.equal(isSilenceHallucination('you you you'), true);
+  assert.equal(isSilenceHallucination('  Okay  '), true);
+});
+
+test('real speech containing a pleasantry is NOT discarded', () => {
+  // The whole risk of this guard is eating a real command, so it matches full
+  // strings only -- never substrings.
+  assert.equal(isSilenceHallucination('thank you, now fly to Helsinki'), false);
+  assert.equal(isSilenceHallucination('ok show me the satellites'), false);
+  assert.equal(isSilenceHallucination('what am I looking at'), false);
+  assert.equal(isSilenceHallucination('zoom in'), false);
+});
+
+test('an empty transcript is not itself a hallucination', () => {
+  // Empty is handled earlier and honestly; this guard is only for filler.
+  assert.equal(isSilenceHallucination(''), false);
+  assert.equal(isSilenceHallucination(null), false);
+  assert.equal(isSilenceHallucination('   '), false);
 });

@@ -23,6 +23,14 @@ const HISTORY_TURNS = 6;
 const MAX_UTTERANCE_MS = 30_000;
 
 /**
+ * Below this a press cannot contain speech. Sending it anyway wastes a turn and
+ * invites Whisper's silence hallucination -- it returns confident filler like
+ * "thank you thank you", which reads as a real answer and is far more confusing
+ * than nothing happening.
+ */
+const MIN_UTTERANCE_MS = 350;
+
+/**
  * Pick a container MediaRecorder can produce AND the transcription upstream
  * accepts. Chrome gives webm/opus; Safari gives mp4. Both are on Groq's list.
  * @returns {string}
@@ -83,6 +91,18 @@ export function initGevVoicePipeline({
   let busy = false;
   let holding = false;
   let stopTimer = null;
+  // Capture is asynchronous to START (getUserMedia, MediaRecorder construction)
+  // but is stopped by a synchronous key/pointer event, so a release can land
+  // BEFORE the start finishes. Without these, endCapture() saw holding===false,
+  // did nothing, and the recorder came up unattended -- it then ran to the
+  // 30s cap recording an empty room, which Whisper transcribes as its silence
+  // hallucination ("thank you thank you"), and every later press was refused
+  // because `holding` was stuck true. A monotonic sequence makes the release
+  // win no matter which order they land in.
+  let captureSeq = 0;
+  let cancelledThrough = 0;
+  let starting = false;
+  let startedAt = 0;
 
   const setStatus = (statusText, detailText) => {
     if (ui.status) ui.status.textContent = statusText;
@@ -101,13 +121,27 @@ export function initGevVoicePipeline({
     ui.root?.classList.remove('has-error');
   };
 
+  /** Return the control to a state where the next press is accepted. */
+  function resetToIdle() {
+    holding = false;
+    starting = false;
+    if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
+    if (ui.root && ui.root.dataset.status !== 'error') ui.root.dataset.status = 'idle';
+  }
+
   async function beginCapture() {
-    if (busy || holding) return;
+    if (busy || holding || starting) return;
+    const seq = ++captureSeq;
+    starting = true;
     clearError();
     try {
       if (!stream) {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       }
+      // The release may already have happened while we were awaiting above.
+      // Honour it instead of bringing up a recorder nobody is holding.
+      if (seq <= cancelledThrough) { resetToIdle(); subtitle.clear(); setStatus('READY', 'HOLD SPACE TO SPEAK'); return; }
+
       const mimeType = pickRecorderMimeType();
       recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
       chunks = [];
@@ -115,15 +149,23 @@ export function initGevVoicePipeline({
         if (event.data && event.data.size) chunks.push(event.data);
       };
       recorder.onstop = () => { void finishCapture(); };
-      recorder.start();
+      // A timeslice means data lands continuously rather than only at stop, so
+      // a recorder that ends unexpectedly still yields what it heard.
+      recorder.start(250);
+      startedAt = Date.now();
+      starting = false;
       holding = true;
+
+      // Re-check: the release could have landed during recorder construction.
+      if (seq <= cancelledThrough) { endCapture(); return; }
+
       if (ui.root) ui.root.dataset.status = 'listening';
       setStatus('LISTENING', 'RELEASE TO SEND');
       subtitle.status('Listening…');
       // A stuck key must not stream the room indefinitely.
       stopTimer = setTimeout(() => endCapture(), MAX_UTTERANCE_MS);
     } catch (error) {
-      holding = false;
+      resetToIdle();
       showError(error?.name === 'NotAllowedError'
         ? 'Microphone permission denied'
         : `Microphone unavailable: ${error?.message || 'unknown error'}`);
@@ -132,6 +174,10 @@ export function initGevVoicePipeline({
   }
 
   function endCapture() {
+    // Recorded synchronously so an in-flight beginCapture aborts even though
+    // `holding` is not true yet.
+    cancelledThrough = captureSeq;
+    if (starting) return;
     if (!holding) return;
     holding = false;
     if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
@@ -139,12 +185,17 @@ export function initGevVoicePipeline({
   }
 
   async function finishCapture() {
+    const heldMs = startedAt ? Date.now() - startedAt : 0;
     const blob = new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' });
     chunks = [];
-    if (!blob.size) {
+    resetToIdle();
+
+    // Too short to contain speech. Sending it anyway wastes a turn and invites
+    // Whisper's silence hallucination, which reads as a real answer and is far
+    // more confusing than nothing happening.
+    if (!blob.size || heldMs < MIN_UTTERANCE_MS) {
       subtitle.clear();
-      setStatus('OFF', 'VOICE STANDBY');
-      if (ui.root) ui.root.dataset.status = 'idle';
+      setStatus('READY', 'HOLD SPACE TO SPEAK');
       return;
     }
     await sendTurn({ audio: await blobToBase64(blob), mimeType: blob.type });
@@ -277,6 +328,10 @@ export function initGevVoicePipeline({
   };
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+  // If focus leaves mid-hold the keyup never arrives, which would leave the
+  // recorder running and wedge the control until the 30s cap.
+  const onBlur = () => endCapture();
+  window.addEventListener('blur', onBlur);
 
   setStatus('READY', 'HOLD SPACE TO SPEAK');
   if (ui.root) ui.root.dataset.status = 'idle';
@@ -293,6 +348,7 @@ export function initGevVoicePipeline({
       window.removeEventListener('pointerup', onPointerUp);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
       stream?.getTracks?.().forEach((track) => track.stop());
       stream = null;
       subtitle.destroy();

@@ -65,6 +65,7 @@ import { VOICE_MODELS, isKnownVoiceTier, resolveVoiceModel } from './src/voice/v
 import {
   buildChatRequest,
   buildFollowUpRequest,
+  isSilenceHallucination,
   parseToolCalls,
   replyTextFrom,
   resolveVoicePipelineConfig,
@@ -7566,6 +7567,13 @@ function voicePipelineProxy() {
         // and said nothing, or the clip was pure silence. Answering 200 with an
         // empty turn keeps that out of the client's error path.
         if (!transcript) return send(res, 200, { transcript: '', reply: '', toolCalls: [], malformed: [] });
+        // Whisper answers silence with confident filler rather than an empty
+        // string. Passing that to the model produces a plausible reply to
+        // something the user never said, which is worse than doing nothing.
+        if (isSilenceHallucination(transcript)) {
+          console.log(`[voice] discarded silence hallucination: ${JSON.stringify(transcript)}`);
+          return send(res, 200, { transcript: '', reply: '', toolCalls: [], malformed: [], discarded: 'silence' });
+        }
 
         const body = buildChatRequest({
           instructions: GEV_VOICE_INSTRUCTIONS.join('\n'),

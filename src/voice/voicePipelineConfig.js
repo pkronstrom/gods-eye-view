@@ -355,3 +355,61 @@ export function buildFollowUpRequest({
     tool_choice: 'none',
   };
 }
+
+/**
+ * Whisper's silence hallucinations, verbatim.
+ *
+ * Fed near-silence, Whisper does not return an empty string -- it returns
+ * confident filler learned from the training corpus, most often subtitle
+ * boilerplate. Observed here as "thank you thank you" after a stuck recorder
+ * uploaded an empty room.
+ *
+ * This is the dangerous failure mode for a voice UI: an empty transcript is
+ * obviously nothing, but a hallucinated one reads as a real utterance and gets
+ * sent to the model, which then answers it. The user sees a plausible reply to
+ * something they never said.
+ *
+ * Deliberately EXACT full-string matches only, never substrings: "thank you"
+ * alone is a hallucination, but "thank you, now fly to Helsinki" is speech.
+ */
+const SILENCE_HALLUCINATIONS = Object.freeze(new Set([
+  'you', 'thank you', 'thanks', 'thank you very much', 'thank you so much',
+  'thanks for watching', 'thanks for watching!', 'thank you for watching',
+  'bye', 'bye bye', 'okay', 'ok', 'so', 'oh', 'hmm', 'mm', 'uh', 'um',
+  'subtitles by the amara.org community', 'subs by www.zeoranger.co.uk',
+  'please subscribe', 'like and subscribe',
+]));
+
+/**
+ * True when a transcript is almost certainly Whisper filling in silence.
+ *
+ * Collapses repetition first: the observed case was the same two words twice
+ * ("thank you thank you"), which is characteristic -- the model loops on its
+ * own output when there is nothing to transcribe.
+ *
+ * @param {string|null|undefined} transcript
+ * @returns {boolean}
+ */
+export function isSilenceHallucination(transcript) {
+  const normalized = String(transcript || '')
+    .toLowerCase()
+    .replace(/[.,!?;:\u2019'"()\[\]]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return false;
+  if (SILENCE_HALLUCINATIONS.has(normalized)) return true;
+
+  // Collapse an exactly-repeated phrase and re-test, so "thank you thank you"
+  // and "you you you" resolve to their single form.
+  const words = normalized.split(' ');
+  for (let size = 1; size <= Math.floor(words.length / 2); size += 1) {
+    if (words.length % size !== 0) continue;
+    const unit = words.slice(0, size).join(' ');
+    let repeated = true;
+    for (let i = size; i < words.length; i += size) {
+      if (words.slice(i, i + size).join(' ') !== unit) { repeated = false; break; }
+    }
+    if (repeated && SILENCE_HALLUCINATIONS.has(unit)) return true;
+  }
+  return false;
+}
