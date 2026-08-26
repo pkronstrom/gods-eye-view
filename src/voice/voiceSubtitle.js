@@ -53,6 +53,31 @@ const ACTION_PHRASES = Object.freeze({
   next_iss_pass: 'Checking the ISS pass',
 });
 
+/**
+ * Strip the markdown a chat model reaches for by habit.
+ *
+ * These replies were written to be SPOKEN -- the prompt asks for short verbal
+ * confirmations -- but the model still emits **bold** and `code`. The subtitle
+ * renders textContent, so without this the user reads the asterisks aloud in
+ * their head: "That's **SWA2355**". Not a formatting nicety: it is the
+ * difference between a caption and a diff.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripMarkdown(text) {
+  return String(text || '')
+    .replace(/```[\s\S]*?```/g, '')       // fenced blocks have no place in a caption
+    .replace(/\*\*([^*]+)\*\*/g, '$1')     // **bold**
+    .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1$2') // *italic*, not a bare asterisk
+    .replace(/(^|[\s(])_([^_\n]+)_/g, '$1$2')   // _italic_
+    .replace(/`([^`]+)`/g, '$1')          // `code`
+    .replace(/^#{1,6}\s+/gm, '')           // headings
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1') // [text](link)
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** @param {string} name @returns {string} */
 function phraseFor(name) {
   return ACTION_PHRASES[name] || String(name || '').replace(/_/g, ' ');
@@ -66,7 +91,7 @@ function phraseFor(name) {
  */
 export function describeTurn(turn) {
   const transcript = String(turn?.transcript || '').trim();
-  const reply = String(turn?.reply || '').trim();
+  const reply = stripMarkdown(turn?.reply);
   const calls = Array.isArray(turn?.toolCalls) ? turn.toolCalls : [];
   const malformed = Array.isArray(turn?.malformed) ? turn.malformed : [];
 

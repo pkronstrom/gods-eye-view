@@ -284,3 +284,74 @@ export function buildChatRequest({
       : {}),
   };
 }
+
+/**
+ * Build the SECOND request of a turn: the one that lets the model answer from
+ * what its tools returned.
+ *
+ * Without this the pipeline is single-pass and questions cannot work. The model
+ * asks for get_entity_context, the client runs it, and the answer is dropped on
+ * the floor -- "what is this aircraft?" fetches the aircraft and says nothing.
+ * Commands still appear to work, because for them the tool call IS the action,
+ * which makes the gap easy to miss.
+ *
+ * Shape follows the OpenAI tool-calling convention every provider here
+ * implements: the assistant turn carrying `tool_calls`, then one `tool` message
+ * per call keyed by `tool_call_id`.
+ *
+ * @param {{instructions: string, tools: Array, transcript: string, history?: Array, model: string, toolCalls: Array<{id: string, name: string, args: object}>, results: Array<{id: string, name: string, result: unknown}>, maxHistory?: number, providerSort?: string|null, maxPrice?: object|null, maxResultChars?: number}} options
+ * @returns {object}
+ */
+export function buildFollowUpRequest({
+  instructions,
+  tools,
+  transcript,
+  history = [],
+  model,
+  toolCalls,
+  results,
+  maxHistory = 6,
+  providerSort = 'throughput',
+  maxPrice = VOICE_DEFAULTS.maxPrice,
+  maxResultChars = 6000,
+}) {
+  const base = buildChatRequest({
+    instructions, tools, transcript, history, model, maxHistory, providerSort, maxPrice,
+  });
+  const byId = new Map((results || []).map((r) => [String(r.id), r]));
+  const assistant = {
+    role: 'assistant',
+    content: null,
+    tool_calls: (toolCalls || []).map((call) => ({
+      id: String(call.id),
+      type: 'function',
+      function: { name: call.name, arguments: JSON.stringify(call.args ?? {}) },
+    })),
+  };
+  // EVERY tool_call MUST get a reply. Providers reject a follow-up with an
+  // unanswered call id, so a tool that threw still reports -- as an error, not
+  // as silence.
+  const toolMessages = (toolCalls || []).map((call) => {
+    const entry = byId.get(String(call.id));
+    let content;
+    try {
+      content = JSON.stringify(entry ? entry.result : { error: 'tool did not run' });
+    } catch {
+      content = JSON.stringify({ error: 'result not serializable' });
+    }
+    // get_entity_context can return a very large scene dump; the prompt is
+    // already ~18.2k tokens before any of this.
+    if (content.length > maxResultChars) {
+      content = `${content.slice(0, maxResultChars)}…[truncated]`;
+    }
+    return { role: 'tool', tool_call_id: String(call.id), content };
+  });
+
+  return {
+    ...base,
+    messages: [...base.messages, assistant, ...toolMessages],
+    // The model has its data now; it should answer, not call more tools. This
+    // deliberately caps a turn at one round of tools rather than looping.
+    tool_choice: 'none',
+  };
+}

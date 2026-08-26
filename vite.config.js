@@ -64,6 +64,7 @@ import {
 import { VOICE_MODELS, isKnownVoiceTier, resolveVoiceModel } from './src/voice/voiceCost.js';
 import {
   buildChatRequest,
+  buildFollowUpRequest,
   parseToolCalls,
   replyTextFrom,
   resolveVoicePipelineConfig,
@@ -7486,6 +7487,52 @@ function voicePipelineProxy() {
       });
     });
 
+    // Second half of a turn: the client has run the tool calls and brings the
+    // results back so the model can actually ANSWER from them. Without this the
+    // pipeline is single-pass and every question dies silently -- the tool runs
+    // and its output is dropped.
+    middlewares.use('/api/voice/answer', async (req, res) => {
+      if (req.method !== 'POST') return send(res, 405, { error: 'POST only' });
+      const cfg = resolveVoicePipelineConfig(process.env);
+      if (!cfg.configured.chat) return send(res, 503, { error: 'no chat key', code: 'no_chat_key' });
+      let payload;
+      try {
+        payload = JSON.parse(await readRequestBodyCapped(req, MAX_BODY_BYTES) || '{}');
+      } catch {
+        return send(res, 400, { error: 'invalid JSON body', code: 'bad_body' });
+      }
+      const toolCalls = Array.isArray(payload.toolCalls) ? payload.toolCalls : [];
+      if (!toolCalls.length) return send(res, 400, { error: 'no tool calls to answer', code: 'no_calls' });
+      try {
+        const body = buildFollowUpRequest({
+          instructions: GEV_VOICE_INSTRUCTIONS.join('\n'),
+          tools: GEV_REALTIME_TOOLS,
+          transcript: String(payload.transcript || ''),
+          history: Array.isArray(payload.history) ? payload.history : [],
+          model: cfg.chat.model,
+          toolCalls,
+          results: Array.isArray(payload.results) ? payload.results : [],
+        });
+        const response = await fetch(cfg.chat.url, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${cfg.chat.key}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://github.com/pkronstrom/gods-eye-view',
+            'X-Title': "God's Eye View (self-hosted)",
+          },
+          body: JSON.stringify(body),
+        });
+        const raw = await response.text();
+        if (!response.ok) return send(res, 502, { error: `chat model failed (${response.status})`, code: 'chat_failed' });
+        const reply = replyTextFrom(JSON.parse(raw)?.choices?.[0]?.message);
+        console.log(`[voice] answer <- ${JSON.stringify(reply.slice(0, 160))}`);
+        return send(res, 200, { reply });
+      } catch (error) {
+        return send(res, 502, { error: error?.message || 'answer failed', code: 'answer_failed' });
+      }
+    });
+
     middlewares.use('/api/voice/turn', async (req, res) => {
       if (req.method !== 'POST') return send(res, 405, { error: 'POST only' });
       const cfg = resolveVoicePipelineConfig(process.env);
@@ -7545,6 +7592,14 @@ function voicePipelineProxy() {
         }
         const message = JSON.parse(raw)?.choices?.[0]?.message;
         const { calls, malformed } = parseToolCalls(message);
+        // Logged deliberately: without this there is no way to answer "what did
+        // I actually ask it?" after the fact, which is the first question asked
+        // of any voice UI that misbehaves. Transcripts and tool names only --
+        // never arguments, which can carry a spoken address or place.
+        console.log(
+          `[voice] "${transcript.slice(0, 120)}" -> ${calls.map((c) => c.name).join(', ') || '(no tools)'}`
+          + (malformed.length ? ` | malformed: ${malformed.join(', ')}` : ''),
+        );
         return send(res, 200, {
           transcript,
           reply: replyTextFrom(message),

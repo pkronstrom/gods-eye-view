@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   VOICE_DEFAULTS,
   buildChatRequest,
+  buildFollowUpRequest,
   normalizeProvider,
   parseToolCalls,
   replyTextFrom,
@@ -211,4 +212,67 @@ test('provider routing is overridable and can be switched off entirely', () => {
     }).provider,
     undefined,
   );
+});
+
+test('the follow-up turn feeds tool results back so questions can be answered', () => {
+  // Without this second pass the pipeline is single-shot: the model asks for
+  // get_entity_context, the client runs it, and the answer is dropped.
+  const body = buildFollowUpRequest({
+    instructions: 'S',
+    tools: [{ name: 'get_entity_context' }],
+    transcript: 'what is this aircraft',
+    model: 'm',
+    toolCalls: [{ id: 'c1', name: 'get_entity_context', args: { scope: 'selected' } }],
+    results: [{ id: 'c1', name: 'get_entity_context', result: { callsign: 'SWA2355' } }],
+  });
+  const roles = body.messages.map((m) => m.role);
+  assert.deepEqual(roles, ['system', 'user', 'assistant', 'tool']);
+
+  const assistant = body.messages[2];
+  assert.equal(assistant.tool_calls[0].id, 'c1');
+  assert.equal(assistant.tool_calls[0].function.name, 'get_entity_context');
+  assert.equal(assistant.tool_calls[0].function.arguments, '{"scope":"selected"}');
+
+  const toolMsg = body.messages[3];
+  assert.equal(toolMsg.tool_call_id, 'c1');
+  assert.match(toolMsg.content, /SWA2355/);
+
+  // It must answer now, not call more tools -- one round of tools per turn.
+  assert.equal(body.tool_choice, 'none');
+});
+
+test('every tool call is answered even when its result is missing', () => {
+  // Providers reject a follow-up that leaves a tool_call_id unanswered, so a
+  // tool that threw must report an error rather than go silent.
+  const body = buildFollowUpRequest({
+    instructions: 'S', tools: [], transcript: 't', model: 'm',
+    toolCalls: [{ id: 'a', name: 'one', args: {} }, { id: 'b', name: 'two', args: {} }],
+    results: [{ id: 'a', name: 'one', result: { ok: true } }],
+  });
+  const toolMsgs = body.messages.filter((m) => m.role === 'tool');
+  assert.deepEqual(toolMsgs.map((m) => m.tool_call_id), ['a', 'b']);
+  assert.match(toolMsgs[1].content, /did not run/);
+});
+
+test('an oversized tool result is truncated, not sent whole', () => {
+  // get_entity_context can dump a large scene; the prompt is already ~18.2k.
+  const body = buildFollowUpRequest({
+    instructions: 'S', tools: [], transcript: 't', model: 'm',
+    toolCalls: [{ id: 'a', name: 'big', args: {} }],
+    results: [{ id: 'a', name: 'big', result: { blob: 'x'.repeat(50_000) } }],
+    maxResultChars: 500,
+  });
+  const toolMsg = body.messages.find((m) => m.role === 'tool');
+  assert.ok(toolMsg.content.length < 600, `expected truncation, got ${toolMsg.content.length}`);
+  assert.match(toolMsg.content, /truncated/);
+});
+
+test('an unserializable tool result degrades instead of throwing', () => {
+  const cyclic = {}; cyclic.self = cyclic;
+  const body = buildFollowUpRequest({
+    instructions: 'S', tools: [], transcript: 't', model: 'm',
+    toolCalls: [{ id: 'a', name: 'weird', args: {} }],
+    results: [{ id: 'a', name: 'weird', result: cyclic }],
+  });
+  assert.match(body.messages.find((m) => m.role === 'tool').content, /not serializable/);
 });

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { describeTurn, subtitleHoldMs } from './voiceSubtitle.js';
+import { describeTurn, stripMarkdown, subtitleHoldMs } from './voiceSubtitle.js';
 
 test('a spoken reply is shown verbatim alongside what was heard', () => {
   const out = describeTurn({ transcript: 'what is that', reply: 'That is the Palace of Fine Arts.' });
@@ -89,4 +89,28 @@ test('hold time scales with reading length, within sane bounds', () => {
   assert.equal(subtitleHoldMs('x'.repeat(1000)), 12_000);
   const medium = subtitleHoldMs('x'.repeat(100));
   assert.ok(medium > 2500 && medium < 12_000, `expected a mid-range hold, got ${medium}`);
+});
+
+test('markdown is stripped so a caption does not read like a diff', () => {
+  // Real observed reply: the prompt asks for spoken confirmations but the model
+  // still emits bold. The subtitle renders textContent, so asterisks show.
+  assert.equal(
+    stripMarkdown("That's Southwest flight **SWA2355**, a **Boeing 737-8**."),
+    "That's Southwest flight SWA2355, a Boeing 737-8.",
+  );
+  assert.equal(stripMarkdown('Use `set_map_stack` for that'), 'Use set_map_stack for that');
+  assert.equal(stripMarkdown('## Heading\nbody'), 'Heading body');
+  assert.equal(stripMarkdown('see [the docs](https://x.example)'), 'see the docs');
+});
+
+test('stripping markdown leaves ordinary prose and lone symbols alone', () => {
+  assert.equal(stripMarkdown('5 * 3 aircraft'), '5 * 3 aircraft');
+  assert.equal(stripMarkdown('snake_case_name stays'), 'snake_case_name stays');
+  assert.equal(stripMarkdown(''), '');
+  assert.equal(stripMarkdown(null), '');
+});
+
+test('a markdown-formatted reply reaches the subtitle already clean', () => {
+  const out = describeTurn({ transcript: 'what is that', reply: 'It is **Helsinki**.' });
+  assert.equal(out.text, 'It is Helsinki.');
 });

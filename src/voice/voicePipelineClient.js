@@ -14,7 +14,7 @@
 
 import { createGevActionRunner } from './gevActions.js';
 import { createVoiceControl } from './gevRealtime.js';
-import { createVoiceSubtitle, describeTurn } from './voiceSubtitle.js';
+import { createVoiceSubtitle, describeTurn, stripMarkdown } from './voiceSubtitle.js';
 
 /** Turns of context sent upstream. Kept short: the prompt is already ~18.2k tokens. */
 const HISTORY_TURNS = 6;
@@ -192,11 +192,14 @@ export function initGevVoicePipeline({
       // rather than thrown: a compound command that half-worked should say so,
       // not lose the half that succeeded.
       const failed = [];
+      const results = [];
       for (const call of data.toolCalls || []) {
         try {
           const result = await runner(call.name, call.args, { isCurrent: () => true });
+          results.push({ id: call.id, name: call.name, result });
           if (result && result.ok === false) failed.push(call.name);
-        } catch {
+        } catch (error) {
+          results.push({ id: call.id, name: call.name, result: { error: String(error?.message || error) } });
           failed.push(call.name);
         }
       }
@@ -206,6 +209,43 @@ export function initGevVoicePipeline({
           transcript: described.transcript,
           note: `Failed: ${failed.join(', ')}`,
         });
+      }
+
+      // SECOND PASS. The tools have run; now let the model answer from what
+      // they returned. Without this a question like "what is this aircraft?"
+      // fetches the aircraft and then says nothing -- the tool output is
+      // dropped. Commands hide the gap, because for them the call IS the action.
+      //
+      // The action subtitle above stays up meanwhile, so this costs no
+      // PERCEIVED latency for commands: the confirmation is already on screen
+      // and is simply replaced if the model has something better to say.
+      if (results.length) {
+        try {
+          const answerResponse = await fetch('/api/voice/answer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              transcript: data.transcript,
+              history: history.slice(-HISTORY_TURNS),
+              toolCalls: data.toolCalls,
+              results,
+            }),
+          });
+          const answer = await answerResponse.json().catch(() => ({}));
+          const spoken = stripMarkdown(answer?.reply);
+          if (answerResponse.ok && spoken) {
+            subtitle.show(spoken, {
+              kind: 'reply',
+              transcript: described.transcript,
+              note: failed.length ? `Failed: ${failed.join(', ')}` : '',
+            });
+            history.push({ role: 'assistant', content: spoken });
+            while (history.length > HISTORY_TURNS) history.shift();
+          }
+        } catch {
+          // The actions already ran and are already confirmed on screen. A
+          // failed follow-up costs the sentence, not the command.
+        }
       }
     } catch (error) {
       showError(error?.message || 'Voice turn failed');
