@@ -44,6 +44,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { defineConfig, loadEnv } from 'vite';
 import cesium from 'vite-plugin-cesium';
+import { ensurePreviewApiProxies } from './scripts/ensurePreviewApiProxies.js';
 import { normalizeRadioCountryInput } from './src/data/radioCountry.js';
 import {
   normalizeRegionalArticles,
@@ -7339,7 +7340,7 @@ export default defineConfig(({ mode }) => {
   }
   const env = { ...process.env };
   return {
-    plugins: [
+    plugins: ensurePreviewApiProxies([
       cesium(),
       openSkyProxy(),
       celestrakProxy(),
@@ -7360,7 +7361,16 @@ export default defineConfig(({ mode }) => {
       trackBackfillProxies(),
       openAiRealtimeProxy(),
       googlePlacesContextProxy(),
-    ],
+    ]),
+    // `vite preview` ignores the `server` block below, so the production
+    // server needs its own. strictPort because a silent fallback to 4174
+    // while the reverse proxy still targets 4173 is a confusing outage.
+    preview: {
+      host: env.HOST || 'localhost',
+      port: parseInt(env.PORT, 10) || 4173,
+      strictPort: true,
+      allowedHosts: (env.PREVIEW_ALLOWED_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean),
+    },
     server: {
       host: env.HOST || 'localhost',
       port: parseInt(env.PORT, 10) || 5173,
