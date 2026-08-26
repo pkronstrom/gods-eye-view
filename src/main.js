@@ -187,7 +187,7 @@ async function init() {
 
     // Photoreal when Google is configured; otherwise prefer ion's Bing aerial
     // (real imagery + world terrain) and fall back to keyless OSM tiles.
-    const initialMapStack = tileset ? 'photoreal' : (cesiumToken ? 'bing-aerial' : 'osm');
+    const initialMapStack = tileset ? 'photoreal' : (cesiumToken ? 'bing-aerial' : 's2cloudless');
 
     const mapStackController = new MapStackController(viewer, {
       googleTileset: tileset,

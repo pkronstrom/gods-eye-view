@@ -26,6 +26,15 @@ export const MAP_STACKS = [
     requiresIon: true,
   },
   {
+    id: 's2cloudless',
+    label: 'Sentinel-2',
+    shortLabel: 'S2',
+    kind: 'wmts',
+    wmtsLayer: 's2cloudless-2025',
+    wmtsFormat: 'jpg',
+    requiresIon: false,
+  },
+  {
     id: 'osm',
     label: 'OSM',
     shortLabel: 'OSM',
@@ -34,7 +43,41 @@ export const MAP_STACKS = [
   },
 ];
 
+// The keyless default. OSM raster is a STREET MAP -- road casings, parking
+// icons, restaurant pins -- which reads as a paper map draped on a globe rather
+// than a satellite view. s2cloudless is actual imagery and needs no account.
+const DEFAULT_KEYLESS_STACK = 's2cloudless';
+
 const DEFAULT_OSM_CREDIT = '© OpenStreetMap contributors';
+
+// EOX Sentinel-2 cloudless: a keyless global cloud-free 10 m mosaic, no account
+// and no published rate limit. Licence is CC BY-NC-SA 4.0 from the 2018 layer
+// onward (2016 is CC BY 4.0), so this is fine for private/self-hosted use and
+// NOT for a commercial deployment -- see https://cloudless.eox.at/documentation/license
+//
+// RESTful WMTS. Cesium substitutes {Layer}/{style}/{TileMatrixSet}/{TileMatrix}/
+// {TileRow}/{TileCol}; the extension differs per layer, so it comes from the
+// stack descriptor.
+//
+// The WGS84 tile matrix set (EPSG:4326, 18 levels) is deliberate over the
+// _3857/GoogleMapsCompatible twin: it matches Cesium's GeographicTilingScheme
+// so nothing is reprojected. The extra levels the 3857 set offers are upsampled
+// past the 10 m source anyway.
+//
+// The year is PINNED rather than using the floating `s2cloudless` alias, so an
+// upstream re-render cannot silently change what this globe looks like. Bump it
+// deliberately; check tiles.maps.eox.at/wmts/1.0.0/WMTSCapabilities.xml for the
+// newest s2cloudless-<year> layer.
+// NOTE: the layer id is interpolated into the URL, not left as a `{Layer}`
+// placeholder. Cesium's WebMapTileServiceImageryProvider substitutes only
+// {style}, {Style} and {TileMatrixSet} at construction plus {TileMatrix},
+// {TileRow}, {TileCol} per request -- `{Layer}` is NOT one of them and survives
+// into the request path, which fails with no exception and no console error.
+// The symptom is a blank blue globe.
+const EOX_WMTS_URL = (layer) => `https://tiles.maps.eox.at/wmts/1.0.0/${layer}/{style}/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}`;
+const EOX_TILE_MATRIX_SET = 'WGS84';
+const EOX_MAX_LEVEL = 17;
+const EOX_CREDIT = 'Sentinel-2 cloudless — https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025)';
 
 // Keyless global ellipsoidal terrain (Re:Earth Terrain / Mapterhorn, CC BY 4.0,
 // EGM2008 geoid via NGA) — quantized-mesh 1.0, `ellipsoid` data-type. Fixes
@@ -62,7 +105,10 @@ export class MapStackController {
     this.cesiumToken = String(cesiumToken || '').trim();
     this._onChange = onChange;
     this._onError = onError;
-    this._activeId = googleTileset ? initialStack : 'osm';
+    // Trust the caller's choice and let the availability check below reject it,
+    // rather than forcing OSM whenever there is no Google tileset -- that
+    // discarded a perfectly good keyless or ion stack the caller had resolved.
+    this._activeId = initialStack;
     this._imageryLayer = null;
     this._imageryProviders = new Map();
     this._isSwitching = false;
@@ -89,7 +135,7 @@ export class MapStackController {
     this._switchGen = 0;
 
     if (!this.getStack(this._activeId) || !this.isStackAvailable(this._activeId)) {
-      this._activeId = googleTileset ? 'photoreal' : 'osm';
+      this._activeId = googleTileset ? 'photoreal' : DEFAULT_KEYLESS_STACK;
     }
   }
 
@@ -256,6 +302,19 @@ export class MapStackController {
     let provider;
     if (stack.kind === 'ion') {
       provider = await Cesium.createWorldImageryAsync({ style: stack.style });
+    } else if (stack.kind === 'wmts') {
+      provider = new Cesium.WebMapTileServiceImageryProvider({
+        url: `${EOX_WMTS_URL(stack.wmtsLayer)}.${stack.wmtsFormat}`,
+        layer: stack.wmtsLayer,
+        style: 'default',
+        format: `image/${stack.wmtsFormat === 'jpg' ? 'jpeg' : stack.wmtsFormat}`,
+        tileMatrixSetID: EOX_TILE_MATRIX_SET,
+        maximumLevel: EOX_MAX_LEVEL,
+        // WebMapTileServiceImageryProvider defaults to Web Mercator; the WGS84
+        // matrix set is geographic, and getting this wrong skews every tile.
+        tilingScheme: new Cesium.GeographicTilingScheme(),
+        credit: new Cesium.Credit(EOX_CREDIT),
+      });
     } else if (stack.kind === 'osm') {
       provider = new Cesium.OpenStreetMapImageryProvider({
         url: 'https://tile.openstreetmap.org/',

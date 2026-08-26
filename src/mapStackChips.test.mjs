@@ -66,6 +66,7 @@ const CONTROLLER_STACKS = [
   { id: 'photoreal', label: 'Google 3D', requiresIon: false, available: true, unavailableReason: null },
   { id: 'bing-aerial', label: 'Bing Aerial', requiresIon: true, available: true, unavailableReason: null },
   { id: 'bing-labels', label: 'Bing Labels', requiresIon: true, available: true, unavailableReason: null },
+  { id: 's2cloudless', label: 'Sentinel-2', requiresIon: false, available: true, unavailableReason: null },
   { id: 'osm', label: 'OSM', requiresIon: false, available: true, unavailableReason: null },
 ];
 
@@ -74,12 +75,12 @@ test('the row renders exactly the four accepted sources', () => {
   renderMapStackChips(container, CONTROLLER_STACKS, { activeId: 'photoreal', doc });
 
   assert.deepEqual(container.children.map((chip) => chip.dataset.stackId), [
-    'photoreal', 'bing-aerial', 'bing-labels', 'osm',
+    'photoreal', 'bing-aerial', 'bing-labels', 's2cloudless', 'osm',
   ]);
   assert.deepEqual(container.children.map(chipText), [
-    'Google 3D', 'Bing Aerial', 'Bing Labels', 'OSM',
+    'Google 3D', 'Bing Aerial', 'Bing Labels', 'Sentinel-2', 'OSM',
   ]);
-  assert.deepEqual(PRESENTED_MAP_STACK_IDS, ['photoreal', 'bing-aerial', 'bing-labels', 'osm']);
+  assert.deepEqual(PRESENTED_MAP_STACK_IDS, ['photoreal', 'bing-aerial', 'bing-labels', 's2cloudless', 'osm']);
   assert.ok(container.children.every((chip) => chip.tagName === 'button' && chip.type === 'button'));
   assert.ok(container.children.every((chip) => chip.classList.contains(MAP_STACK_CHIP_CLASS)));
 });
@@ -91,7 +92,7 @@ test('internal and future stacks stay outside the approved presentation set', ()
   const withHybrid = [...CONTROLLER_STACKS, { id: 'hybrid', label: 'Hybrid', available: true }];
   renderMapStackChips(container, withHybrid, { activeId: 'photoreal', doc });
 
-  assert.equal(container.children.length, 4);
+  assert.equal(container.children.length, 5);
   assert.doesNotMatch(container.children.map(chipText).join(' '), /Hybrid/);
 });
 
@@ -112,7 +113,7 @@ test('clicking a chip dispatches that stack id — the same selection the dropdo
     doc,
   });
 
-  container.children[3].click();
+  container.children[4].click();
   container.children[1].click();
   assert.deepEqual(selected, ['osm', 'bing-aerial']);
 });
@@ -136,12 +137,12 @@ test('the lit chip tracks controller state, not the click', () => {
   // A rejected/superseded switch reports the stack that is genuinely active.
   syncMapStackChips(container, 'photoreal');
   assert.ok(container.children[0].classList.contains('active'));
-  assert.equal(container.children[3].getAttribute('aria-pressed'), 'false');
+  assert.equal(container.children[4].getAttribute('aria-pressed'), 'false');
 
   // A landed switch moves both the class and the pressed state.
   syncMapStackChips(container, 'osm');
-  assert.ok(container.children[3].classList.contains('active'));
-  assert.equal(container.children[3].getAttribute('aria-pressed'), 'true');
+  assert.ok(container.children[4].classList.contains('active'));
+  assert.equal(container.children[4].getAttribute('aria-pressed'), 'true');
   assert.ok(!container.children[0].classList.contains('active'));
   assert.equal(container.children[0].getAttribute('aria-pressed'), 'false');
 });

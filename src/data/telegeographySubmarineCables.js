@@ -207,15 +207,15 @@ export function createCableOverlayPublisher({
  * real `MAP_STACKS` so the omission is caught loudly.
  */
 const CABLE_GLOBE_STACK_IDS = Object.freeze(
-  new Set(['bing-aerial', 'bing-labels', 'osm']),
+  new Set(['bing-aerial', 'bing-labels', 's2cloudless', 'osm']),
 );
 
 /**
  * Ground-line classification for one map stack. The photoreal stack renders
  * Google 3D tiles with the Cesium globe HIDDEN, so cable ground lines only
  * need the 3D-tile classification pass there; every other known stack (the
- * bing stacks and osm) renders imagery on the shown globe, so only the
- * terrain pass applies.
+ * bing stacks, s2cloudless and osm) renders imagery on the shown globe, so only
+ * the terrain pass applies.
  * Classifying against just the active surface halves the batched
  * GroundPolylinePrimitive's emitted command sets. BOTH is the safe fallback
  * for an unknown stack — it renders on every surface, exactly the shipped
