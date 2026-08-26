@@ -1,0 +1,9 @@
+node_modules
+dist
+.git
+.gev-cache
+.env
+.env.*
+docs/media
+scripts/fixtures
+*.log
