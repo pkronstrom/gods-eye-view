@@ -24,10 +24,16 @@ const API_URL = '/api/fmi/lightning?hours=24';
 /** Hours of history requested; also the window over which age fade runs. */
 const WINDOW_MINUTES = 24 * 60;
 
+// Near-white cores with a cool cast, not blue.
+//
+// The first pass used mid-blues, which disappeared entirely against a dark
+// satellite globe over water and forest -- the layer looked broken when it was
+// working. Lightning reads as white-hot; the strength difference is carried by
+// SIZE, with hue only tinting the weakest.
 const STRENGTH_STYLE = Object.freeze({
-  strong: { color: Cesium.Color.fromCssColorString('#fff2a8'), size: 14 },
-  moderate: { color: Cesium.Color.fromCssColorString('#8fd8ff'), size: 10 },
-  weak: { color: Cesium.Color.fromCssColorString('#5aa9d6'), size: 7 },
+  strong: { color: Cesium.Color.fromCssColorString('#ffffff'), size: 20 },
+  moderate: { color: Cesium.Color.fromCssColorString('#dcf0ff'), size: 14 },
+  weak: { color: Cesium.Color.fromCssColorString('#a8d8ff'), size: 10 },
 });
 
 /**
@@ -40,9 +46,11 @@ const STRENGTH_STYLE = Object.freeze({
  * @returns {number} 0.25 to 1
  */
 export function strikeOpacity(ageMinutes) {
-  if (!Number.isFinite(ageMinutes)) return 0.25;
+  if (!Number.isFinite(ageMinutes)) return 0.55;
   const fraction = Math.min(1, Math.max(0, ageMinutes / WINDOW_MINUTES));
-  return 1 - (fraction * 0.75);
+  // Floor at 0.55, not 0.25. Over a 24h window MOST strikes are old, so a deep
+  // floor made the typical case the invisible one and the layer read as empty.
+  return 1 - (fraction * 0.45);
 }
 
 /**
@@ -127,8 +135,10 @@ export function createLightningLayer() {
             point: {
               pixelSize: look.size,
               color: base.withAlpha(look.alpha),
-              outlineColor: Cesium.Color.WHITE.withAlpha(look.outline ? look.alpha : 0),
-              outlineWidth: look.outline ? 2 : 0,
+              // Every strike gets a rim -- it is what separates a point from
+              // busy terrain behind it. Ground strikes get a heavier one.
+              outlineColor: Cesium.Color.fromCssColorString('#4fc3f7').withAlpha(look.alpha),
+              outlineWidth: look.outline ? 4 : 2,
               heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
               disableDepthTestDistance: Number.POSITIVE_INFINITY,
             },
@@ -142,7 +152,10 @@ export function createLightningLayer() {
         }
 
         _count = _dataSource.entities.values.length;
-        _lastUpdate = new Date().toISOString();
+        // Milliseconds, NOT an ISO string: the toggle panel subtracts this to
+        // render "3h ago", and a string yields "NaNh ago" -- which reads as a
+        // broken layer rather than a fresh one. Matches earthquakes.js.
+        _lastUpdate = Date.now();
         _lastError = strikes.length === 0 ? null : null;
         // An empty window is a normal, frequent outcome -- most of the year
         // there is no lightning in range. Logged as a count, never as an error.
