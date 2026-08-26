@@ -9161,3 +9161,81 @@ body.scene-playback-mode #first-run-launcher {
   /* Scrolling a tile into view must not animate either. */
   .first-run-choices { scroll-behavior: auto; }
 }
+
+/* ── Voice subtitle ──────────────────────────────────────────────────────────
+ * The turn-based voice backend has no speech synthesis, so this IS the
+ * assistant's voice. It sits above the command dock, centred, and never
+ * intercepts pointer events -- the globe stays draggable while it is up.
+ */
+.gev-voice-subtitle {
+  position: fixed;
+  left: 50%;
+  bottom: 12.5rem;
+  transform: translateX(-50%);
+  z-index: 60;
+  max-width: min(62ch, 82vw);
+  padding: 0.7rem 1.1rem;
+  text-align: center;
+  pointer-events: none;
+  border: 1px solid rgba(120, 214, 255, 0.28);
+  border-radius: 0.55rem;
+  background: rgba(6, 14, 22, 0.82);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 0 24px rgba(0, 0, 0, 0.55);
+  animation: gev-voice-subtitle-in 140ms ease-out;
+}
+
+.gev-voice-subtitle[hidden] { display: none; }
+
+@keyframes gev-voice-subtitle-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* What the user was heard to say. Quiet: it is context, not the answer. */
+.gev-voice-subtitle__said {
+  margin: 0 0 0.3rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  color: rgba(150, 190, 214, 0.72);
+  font-style: italic;
+}
+
+.gev-voice-subtitle__line {
+  margin: 0;
+  font-size: 1.02rem;
+  line-height: 1.35;
+  color: #dff1ff;
+  text-shadow: 0 0 14px rgba(80, 190, 255, 0.35);
+}
+
+.gev-voice-subtitle__note {
+  margin: 0.35rem 0 0;
+  font-size: 0.74rem;
+  color: #ffb4b4;
+}
+
+/* An action confirmation is shorter and less "spoken" than a real answer. */
+.gev-voice-subtitle[data-kind='action'] .gev-voice-subtitle__line {
+  font-size: 0.9rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8fe0ff;
+}
+
+/* Transient states (Listening / Thinking) read as chrome, not as speech. */
+.gev-voice-subtitle[data-kind='status'] .gev-voice-subtitle__line {
+  font-size: 0.82rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(150, 205, 230, 0.85);
+}
+
+.gev-voice-subtitle[data-kind='idle'] .gev-voice-subtitle__line {
+  color: rgba(190, 205, 214, 0.8);
+}
+
+@media (max-width: 40rem) {
+  .gev-voice-subtitle { bottom: 10rem; max-width: 90vw; padding: 0.55rem 0.8rem; }
+  .gev-voice-subtitle__line { font-size: 0.92rem; }
+}

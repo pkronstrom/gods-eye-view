@@ -19,6 +19,7 @@ import { LAYER_STATE_REGISTRY } from './data/layerState.js';
 import { registerDataCredits } from './data/dataCredits.js';
 import { SceneDirector } from './scenes/director.js';
 import { initGevVoiceCommands } from './voice/gevRealtime.js';
+import { initGevVoicePipeline } from './voice/voicePipelineClient.js';
 import { MapStackController } from './mapStackController.js';
 import { initAnnotations } from './annotations/index.js';
 import { initLogoGaze } from './logoGaze.js';
@@ -339,7 +340,23 @@ async function init() {
       getRenderGovernorDiagnostics,
       requestRender: governorRequestRender,
     };
+    // Two voice backends. The turn-based pipeline (Groq/OpenRouter, no OpenAI
+    // key, answers on screen as a subtitle) is preferred whenever the server
+    // reports a chat key; the OpenAI Realtime session remains for proper
+    // speech-to-speech when OPENAI_API_KEY is set and the pipeline is not
+    // configured. Selection is async because only the server knows which keys
+    // exist -- until it resolves, the Realtime backend owns the button as
+    // before, so this can only add capability, never remove it.
     window.__godsEyeView.voiceCommands = initGevVoiceCommands({ viewer, styleManager, dataManager, sceneDirector, annotations });
+    fetch('/api/voice/config')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((voiceConfig) => {
+        if (!voiceConfig?.chat?.ready) return;
+        window.__godsEyeView.voiceCommands = initGevVoicePipeline({
+          viewer, styleManager, dataManager, sceneDirector, annotations, config: voiceConfig,
+        });
+      })
+      .catch(() => { /* keep the Realtime backend; it is already bound. */ });
 
   } catch (error) {
     console.error("God's Eye View initialization failed:", error);
