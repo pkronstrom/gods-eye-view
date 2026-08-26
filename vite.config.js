@@ -54,6 +54,7 @@ import {
 import { normalizeAdsbLolPointResponse } from './src/data/adsbLolFallback.js';
 import { createAisStreamAdapter, isRecognizedAisEnvelope } from './src/data/aisStreamAdapter.js';
 import { parseSilenceTimeoutEnv } from './src/data/aisWatchdog.js';
+import { parseFmiLightning } from './src/data/fmiLightning.js';
 import {
   fetchTerrainChunkWithRetry,
   parseTerrainPoints,
@@ -5698,7 +5699,7 @@ const GEV_REALTIME_TOOLS = [
             'local-datacenters',
             'local-dams',
             'telegeography-submarine-cables',
-            'local-firms',
+            'local-firms', 'lightning',
           ],
         },
         enabled: { type: 'boolean' },
@@ -7649,6 +7650,92 @@ function voicePipelineProxy() {
   };
 }
 
+
+/**
+ * Vite plugin: FMI lightning strikes.
+ *
+ *   GET /api/fmi/lightning?hours=6
+ *
+ * The Finnish Meteorological Institute publishes strike detections openly and
+ * keylessly, covering Finland and a good deal of the surrounding region --
+ * Scandinavia, the Baltics, Poland. Needs a proxy because FMI's WFS sends no
+ * CORS headers, and because the response is XML that nobody should be parsing
+ * in the browser.
+ *
+ * Cached hard. Lightning is bursty and the feed is a shared public service: a
+ * globe with the layer on polls every minute, and re-fetching six hours of
+ * strikes each time would be rude for data that changes at the edges.
+ *
+ * @returns {import('vite').Plugin}
+ */
+function fmiLightningProxy() {
+  const CACHE_MS = 60_000;
+  const MAX_HOURS = 24;
+  let cache = null;
+  let cacheAt = 0;
+  let cacheKey = '';
+  let inflight = null;
+
+  async function load(hours) {
+    const end = new Date();
+    const start = new Date(end.getTime() - hours * 3600_000);
+    const url = 'https://opendata.fmi.fi/wfs?service=WFS&version=2.0.0&request=getFeature'
+      + '&storedquery_id=fmi::observations::lightning::simple'
+      + `&starttime=${start.toISOString().replace(/\.\d+Z$/, 'Z')}`
+      + `&endtime=${end.toISOString().replace(/\.\d+Z$/, 'Z')}`;
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'gods-eye-view-homelab/0.1 (self-hosted)' },
+    });
+    if (!response.ok) throw new Error(`FMI HTTP ${response.status}`);
+    return parseFmiLightning(await response.text());
+  }
+
+  function install(middlewares) {
+    middlewares.use('/api/fmi/lightning', async (req, res) => {
+      const url = new URL(req.url || '', 'http://localhost');
+      const requested = Number.parseInt(url.searchParams.get('hours') || '6', 10);
+      const hours = Number.isFinite(requested) ? Math.min(MAX_HOURS, Math.max(1, requested)) : 6;
+      const key = String(hours);
+      const now = Date.now();
+
+      const send = (status, body, cacheState) => {
+        if (res.headersSent) return;
+        res.writeHead(status, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'x-fmi-cache': cacheState,
+        });
+        res.end(JSON.stringify(body));
+      };
+
+      if (cache && cacheKey === key && (now - cacheAt) < CACHE_MS) {
+        return send(200, { strikes: cache, hours, cached: true }, 'hit');
+      }
+      try {
+        // Single-flight: a page with several tabs open must not multiply the
+        // load on a public service.
+        if (!inflight) {
+          inflight = load(hours).finally(() => { inflight = null; });
+        }
+        const strikes = await inflight;
+        cache = strikes;
+        cacheAt = Date.now();
+        cacheKey = key;
+        return send(200, { strikes, hours, cached: false }, 'miss');
+      } catch (error) {
+        // Serve stale rather than blanking the layer: an hour-old strike map is
+        // far more useful than an empty one, and lightning is not safety data.
+        if (cache) return send(200, { strikes: cache, hours, cached: true, stale: true }, 'stale');
+        return send(502, { error: error?.message || 'FMI unavailable', strikes: [] }, 'error');
+      }
+    });
+  }
+
+  return {
+    name: 'fmi-lightning-proxy',
+    configureServer(server) { install(server.middlewares); },
+  };
+}
+
 export default defineConfig(({ mode }) => {
   // Load only this checkout's dotenv files. Shell/Keychain values still win,
   // and no sibling workspace is consulted implicitly.
@@ -7680,6 +7767,7 @@ export default defineConfig(({ mode }) => {
       openAiRealtimeProxy(),
       googlePlacesContextProxy(),
       voicePipelineProxy(),
+      fmiLightningProxy(),
     ]),
     // `vite preview` ignores the `server` block below, so the production
     // server needs its own. strictPort because a silent fallback to 4174
