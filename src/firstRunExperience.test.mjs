@@ -653,10 +653,14 @@ test('the voice TOOL SCHEMA is byte-identical to main — the mission mapping is
   const end = src.indexOf('\n];\n', start);
   const block = src.slice(start, end + 4);
 
-  assert.equal(block.length, 31104, 'tool schema byte length drifted from the frozen baseline');
+  // BASELINE REVISED (homelab fork): the s2cloudless map stack added one enum
+  // value and reworded set_map_stack's description. This guard exists so the
+  // FIRST-RUN MISSIONS cannot smuggle in a schema edit -- it is not a freeze on
+  // the schema forever. Rebase deliberately, never to make a red test green.
+  assert.equal(block.length, 31297, 'tool schema byte length drifted from the frozen baseline');
   assert.equal(
     crypto.createHash('sha256').update(block).digest('hex'),
-    '3ace199727934e851902e4899c423d549d34d3f53469dcb56f07fc070d3f9d66',
+    'e0bee076b29a8320c46c5d57ec034b2d1494e1adb332761ced0c5ff3ed36861a',
     'the first-run missions must ride EXISTING tools: no schema edit, no cache bust',
   );
 
