@@ -1316,6 +1316,26 @@ const AISSTREAM_DOWN_RETRY_MS = 900_000;
 const AISSTREAM_AUTH_PROBE_MS = 3_600_000;
 /** How often the watchdog re-evaluates without request traffic. */
 const AISSTREAM_TICK_MS = 15_000;
+/**
+ * Idle-disconnect window for the AISStream backend socket.
+ *
+ * The browser POLLS /api/ais-live; the server is what holds the upstream
+ * websocket. So "is anyone watching" is exactly "have requests arrived
+ * recently" -- no connection tracking needed. Without this the socket is
+ * opened by the background tick at server start and stays up forever, burning
+ * the AISStream subscription and a reconnect chain around the clock even when
+ * nobody has the page open.
+ *
+ * Set AISSTREAM_IDLE_DISCONNECT_MS=0 to disable and keep the socket up
+ * permanently. Must be comfortably larger than the client's poll interval or
+ * the socket will flap.
+ */
+const AISSTREAM_IDLE_DISCONNECT_MS = (() => {
+  const raw = process.env.AISSTREAM_IDLE_DISCONNECT_MS;
+  if (raw === undefined || raw === '') return 120_000;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 120_000;
+})();
 // Sourced from the shared voice-model registry so the client's cost estimate
 // can never be computed against a different model than the session runs on.
 const OPENAI_REALTIME_MODEL_DEFAULT = VOICE_MODELS.standard.id;
@@ -1341,6 +1361,8 @@ let _aisWatchdogPolicy = null;
 let _aisStreamTickTimer = null;
 /** Set by dispose so the next ensure() re-derives budgets from a reloaded .env. */
 let _aisNeedsRearm = false;
+/** Epoch-ms of the last /api/ais-live request; 0 = none since boot/disconnect. */
+let _aisLastRequestAt = 0;
 /** @type {Function|null|undefined} `ws` constructor; null = unavailable, undefined = not yet probed. */
 let _aisWebSocketImpl;
 /** @type {Map<string,object>} */
@@ -4760,6 +4782,9 @@ function aisLiveProxy() {
   function install(middlewares) {
     middlewares.use('/api/ais-live', async (req, res) => {
       try {
+        // Stamp BEFORE ensuring, so the idle watchdog cannot tear down a
+        // socket in the same tick that a client is asking for rows.
+        _aisLastRequestAt = Date.now();
         ensureAisStreamConnection();
         const incoming = new URL(req.url || '', 'http://localhost');
 
@@ -6307,12 +6332,40 @@ function startAisStreamWatchdogTick() {
   if (_aisStreamTickTimer) return;
   _aisStreamTickTimer = setInterval(() => {
     try {
+      if (aisStreamIsIdle()) {
+        releaseIdleAisStream();
+        return;
+      }
       ensureAisStreamConnection();
     } catch (error) {
       console.warn('[AISStream] watchdog tick failed', error?.message || '');
     }
   }, AISSTREAM_TICK_MS);
   _aisStreamTickTimer.unref?.();
+}
+
+/**
+ * True when no browser has asked for vessel rows inside the idle window, so
+ * the upstream socket is serving nobody.
+ * @returns {boolean}
+ */
+function aisStreamIsIdle() {
+  if (AISSTREAM_IDLE_DISCONNECT_MS === 0) return false;
+  if (!_aisAdapter) return false;
+  return (Date.now() - _aisLastRequestAt) > AISSTREAM_IDLE_DISCONNECT_MS;
+}
+
+/**
+ * Drop the upstream socket while KEEPING the watchdog tick running, so the
+ * next /api/ais-live request reconnects on its own. Deliberately not
+ * disposeAisStream(): that also clears the interval, which would leave nothing
+ * to notice the socket had gone.
+ */
+function releaseIdleAisStream() {
+  if (!_aisAdapter) return;
+  _aisAdapter.dispose();
+  _aisWatchdogPolicy = null;
+  _aisNeedsRearm = true;
 }
 
 /**
