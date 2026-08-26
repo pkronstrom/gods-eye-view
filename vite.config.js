@@ -7581,7 +7581,14 @@ function voicePipelineProxy() {
           tools: GEV_REALTIME_TOOLS,
           transcript,
           history: Array.isArray(payload.history) ? payload.history : [],
-          model: cfg.chat.model,
+          // Optional per-request model override, so models can be A/B'd against
+          // real commands without a redeploy. Shape-checked only -- an unknown
+          // id is rejected upstream, and max_price still bounds what an
+          // expensive one can cost. Safe here because the service is
+          // Tailscale-only and spends the operator's own key.
+          model: (typeof payload.model === 'string' && /^[\w.-]+\/[\w.\-:]+$/.test(payload.model))
+            ? payload.model
+            : cfg.chat.model,
         });
         const response = await fetch(cfg.chat.url, {
           method: 'POST',
