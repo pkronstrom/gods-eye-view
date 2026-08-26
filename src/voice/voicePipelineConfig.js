@@ -66,6 +66,9 @@ export const VOICE_DEFAULTS = Object.freeze({
   // Audio-input chat model used only when the STT provider has no
   // transcription endpoint (i.e. OpenRouter).
   sttChatModel: 'google/gemini-3.7-flash',
+  // USD per MILLION tokens. See buildChatRequest for why this exists and why
+  // it is a hard constraint worth keeping loose.
+  maxPrice: Object.freeze({ prompt: 0.15, completion: 0.30 }),
 });
 
 /**
@@ -231,6 +234,7 @@ export function buildChatRequest({
   model,
   maxHistory = 6,
   providerSort = 'throughput',
+  maxPrice = VOICE_DEFAULTS.maxPrice,
 }) {
   const trimmed = Array.isArray(history)
     ? history
@@ -249,14 +253,34 @@ export function buildChatRequest({
     // Keep replies short: they are rendered as a one-or-two-line subtitle, not
     // spoken, so a long paragraph is worse than useless here.
     max_tokens: 400,
-    // Speed is the binding constraint for a voice UI, not price -- a voice
-    // command that lands in four seconds is a different product from one that
-    // lands in one. A model like deepseek-v4-flash has ~17 tool-capable
-    // endpoints on OpenRouter with very different speeds, so let OpenRouter
-    // pick the quickest per request rather than pinning a provider here and
-    // watching it rot. 'throughput' suits us over 'latency' because the reply
-    // is a few hundred tokens on top of an 18.2k-token prefill, so sustained
-    // rate dominates time-to-first-token. Ignored by non-OpenRouter providers.
-    ...(providerSort ? { provider: { sort: providerSort } } : {}),
+    // "Fastest, but not at any price."
+    //
+    // Speed is the binding constraint for a voice UI: a command that lands in
+    // one second is a different product from one that lands in four. So sort by
+    // throughput and let OpenRouter pick the quickest endpoint per request
+    // rather than pinning a provider here and watching it rot. 'throughput'
+    // beats 'latency' for us because the reply is a few hundred tokens on top
+    // of an 18.2k-token prefill, so sustained rate dominates time-to-first-token.
+    //
+    // But sort alone ignores cost, and the price spread WITHIN a single model
+    // is large: deepseek-v4-flash ranges from $0.068/1M (DigitalOcean) to
+    // $0.440/1M (Cloudflare) across its 17 tool-capable endpoints -- 6.5x on
+    // the same model. max_price bounds that. At the default ceiling 13 of 17
+    // endpoints stay eligible and the worst case is ~2x the cheapest, which
+    // leaves routing plenty of room to actually optimise for speed.
+    //
+    // CAUTION: max_price is a HARD constraint -- if no endpoint qualifies the
+    // request FAILS rather than falling back to a dearer one. Keep the ceiling
+    // loose enough to retain several providers, and raise it if upstream
+    // pricing drifts. Set maxPrice to null to disable the cap entirely.
+    // Both fields are USD per MILLION tokens. Ignored by non-OpenRouter providers.
+    ...(providerSort || maxPrice
+      ? {
+        provider: {
+          ...(providerSort ? { sort: providerSort } : {}),
+          ...(maxPrice ? { max_price: maxPrice } : {}),
+        },
+      }
+      : {}),
   };
 }

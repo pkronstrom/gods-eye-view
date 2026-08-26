@@ -174,20 +174,41 @@ test('junk history entries are filtered rather than sent upstream', () => {
   assert.equal(body.messages[1].content, 'kept');
 });
 
-test('chat requests ask OpenRouter to route to the fastest endpoint', () => {
-  // Speed is the binding constraint for voice; deepseek-v4-flash alone has ~17
-  // tool-capable endpoints with very different throughput.
+test('chat requests route for speed but with a price ceiling', () => {
+  // Fastest, not fastest-at-any-price: the spread within one model is 6.5x
+  // (deepseek-v4-flash runs $0.068-$0.440/1M across its endpoints), so sorting
+  // by throughput alone can quietly pick the dearest one.
   const body = buildChatRequest({ instructions: 'S', tools: [], transcript: 't', model: 'm' });
-  assert.deepEqual(body.provider, { sort: 'throughput' });
+  assert.deepEqual(body.provider, {
+    sort: 'throughput',
+    max_price: { prompt: 0.15, completion: 0.30 },
+  });
+});
+
+test('the price ceiling can be raised, lowered, or removed', () => {
+  const raised = buildChatRequest({
+    instructions: 'S', tools: [], transcript: 't', model: 'm',
+    maxPrice: { prompt: 1, completion: 2 },
+  });
+  assert.deepEqual(raised.provider.max_price, { prompt: 1, completion: 2 });
+  // max_price is a HARD constraint upstream, so removing it must be possible.
+  const uncapped = buildChatRequest({
+    instructions: 'S', tools: [], transcript: 't', model: 'm', maxPrice: null,
+  });
+  assert.deepEqual(uncapped.provider, { sort: 'throughput' });
 });
 
 test('provider routing is overridable and can be switched off entirely', () => {
+  // Switching the sort must NOT quietly drop the price ceiling with it.
   assert.deepEqual(
     buildChatRequest({ instructions: 'S', tools: [], transcript: 't', model: 'm', providerSort: 'latency' }).provider,
-    { sort: 'latency' },
+    { sort: 'latency', max_price: { prompt: 0.15, completion: 0.30 } },
   );
-  assert.equal(
-    'provider' in buildChatRequest({ instructions: 'S', tools: [], transcript: 't', model: 'm', providerSort: null }),
-    false,
+  assert.deepEqual(
+    buildChatRequest({
+      instructions: 'S', tools: [], transcript: 't', model: 'm',
+      providerSort: null, maxPrice: null,
+    }).provider,
+    undefined,
   );
 });
