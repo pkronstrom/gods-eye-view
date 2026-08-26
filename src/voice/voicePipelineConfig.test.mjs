@@ -6,6 +6,7 @@ import {
   buildChatRequest,
   buildFollowUpRequest,
   isSilenceHallucination,
+  parseLeakedToolCalls,
   normalizeProvider,
   parseToolCalls,
   replyTextFrom,
@@ -182,6 +183,7 @@ test('chat requests route for speed but with a price ceiling', () => {
   // by throughput alone can quietly pick the dearest one.
   const body = buildChatRequest({ instructions: 'S', tools: [], transcript: 't', model: 'm' });
   assert.deepEqual(body.provider, {
+    require_parameters: true,
     sort: 'throughput',
     max_price: { prompt: 0.15, completion: 0.30 },
   });
@@ -197,21 +199,23 @@ test('the price ceiling can be raised, lowered, or removed', () => {
   const uncapped = buildChatRequest({
     instructions: 'S', tools: [], transcript: 't', model: 'm', maxPrice: null,
   });
-  assert.deepEqual(uncapped.provider, { sort: 'throughput' });
+  assert.deepEqual(uncapped.provider, { require_parameters: true, sort: 'throughput' });
 });
 
 test('provider routing is overridable and can be switched off entirely', () => {
   // Switching the sort must NOT quietly drop the price ceiling with it.
   assert.deepEqual(
     buildChatRequest({ instructions: 'S', tools: [], transcript: 't', model: 'm', providerSort: 'latency' }).provider,
-    { sort: 'latency', max_price: { prompt: 0.15, completion: 0.30 } },
+    { require_parameters: true, sort: 'latency', max_price: { prompt: 0.15, completion: 0.30 } },
   );
   assert.deepEqual(
     buildChatRequest({
       instructions: 'S', tools: [], transcript: 't', model: 'm',
       providerSort: null, maxPrice: null,
     }).provider,
-    undefined,
+    // require_parameters is never optional: it is what stops a provider
+    // ignoring `tools` and leaking call syntax into the reply.
+    { require_parameters: true },
   );
 });
 
@@ -302,4 +306,43 @@ test('an empty transcript is not itself a hallucination', () => {
   assert.equal(isSilenceHallucination(''), false);
   assert.equal(isSilenceHallucination(null), false);
   assert.equal(isSilenceHallucination('   '), false);
+});
+
+test('routing refuses providers that do not implement tool calling', () => {
+  // require_parameters defaults to FALSE, which makes `tools` a soft
+  // preference: a provider that ignores it leaves the model emitting its call
+  // syntax as prose. Observed twice in production as raw DSML in the subtitle.
+  const body = buildChatRequest({ instructions: 'S', tools: [], transcript: 't', model: 'm' });
+  assert.equal(body.provider.require_parameters, true);
+});
+
+test('a leaked DSML tool call is recovered rather than lost', () => {
+  // Verbatim from production, for "Where is ISS right now?".
+  const leaked = '<|DSML|tool_calls> <|DSML|invoke name="set_layer_visibility">'
+    + ' <|DSML|parameter name="layerId" string="true">satellites</|DSML|parameter>'
+    + ' <|DSML|parameter name="visible" string="true">true</|DSML|parameter>'
+    + ' </|DSML|invoke> </|DSML|tool_calls>';
+  const calls = parseLeakedToolCalls(leaked);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'set_layer_visibility');
+  // "true" must become a boolean or a strict tool rejects it.
+  assert.deepEqual(calls[0].args, { layerId: 'satellites', visible: true });
+});
+
+test('several leaked calls in one reply are all recovered', () => {
+  const leaked = '<|DSML|invoke name="fly_to_location">'
+    + '<|DSML|parameter name="query" string="true">Helsinki</|DSML|parameter></|DSML|invoke>'
+    + '<|DSML|invoke name="adjust_camera_zoom">'
+    + '<|DSML|parameter name="amount" string="true">2</|DSML|parameter></|DSML|invoke>';
+  const calls = parseLeakedToolCalls(leaked);
+  assert.deepEqual(calls.map((c) => c.name), ['fly_to_location', 'adjust_camera_zoom']);
+  assert.equal(calls[0].args.query, 'Helsinki');
+  // Numbers coerce too, for the same reason booleans do.
+  assert.equal(calls[1].args.amount, 2);
+});
+
+test('ordinary prose is never mistaken for a leaked call', () => {
+  assert.deepEqual(parseLeakedToolCalls('That is Helsinki, seen from 200 km up.'), []);
+  assert.deepEqual(parseLeakedToolCalls(''), []);
+  assert.deepEqual(parseLeakedToolCalls(null), []);
 });

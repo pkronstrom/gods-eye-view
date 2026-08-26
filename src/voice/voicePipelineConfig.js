@@ -274,14 +274,24 @@ export function buildChatRequest({
     // loose enough to retain several providers, and raise it if upstream
     // pricing drifts. Set maxPrice to null to disable the cap entirely.
     // Both fields are USD per MILLION tokens. Ignored by non-OpenRouter providers.
-    ...(providerSort || maxPrice
-      ? {
-        provider: {
-          ...(providerSort ? { sort: providerSort } : {}),
-          ...(maxPrice ? { max_price: maxPrice } : {}),
-        },
-      }
-      : {}),
+    // require_parameters is NOT optional here, despite reading like a nicety.
+    // It defaults to false, which makes `tools` a SOFT preference: OpenRouter
+    // may route to an endpoint that does not implement tool calling, which then
+    // silently IGNORES the parameter. The model, still asked to use tools,
+    // emits its internal tool syntax as prose instead -- observed in production
+    // as a subtitle full of raw DSML markup where an answer should have been.
+    // Intermittent by nature, because routing picks a different endpoint per
+    // request, which makes it miserable to reproduce and easy to misdiagnose as
+    // a model problem.
+    //
+    // Note this is now the third hard constraint alongside max_price. If a turn
+    // ever fails with no eligible provider, loosen the price ceiling before
+    // touching this one.
+    provider: {
+      require_parameters: true,
+      ...(providerSort ? { sort: providerSort } : {}),
+      ...(maxPrice ? { max_price: maxPrice } : {}),
+    },
   };
 }
 
@@ -412,4 +422,67 @@ export function isSilenceHallucination(transcript) {
     if (repeated && SILENCE_HALLUCINATIONS.has(unit)) return true;
   }
   return false;
+}
+
+/**
+ * Recover tool calls that a provider leaked into the reply text as prose.
+ *
+ * When an endpoint does not implement tool calling it ignores the `tools`
+ * parameter, and the model emits its internal call syntax as content. Observed
+ * twice in production, e.g. for "Where is ISS right now?":
+ *
+ *   <|DSML|tool_calls> <|DSML|invoke name="set_layer_visibility">
+ *   <|DSML|parameter name="layerId" string="true">satellites</|DSML|parameter>
+ *   <|DSML|parameter name="visible" string="true">true</|DSML|parameter>
+ *   </|DSML|invoke> </|DSML|tool_calls>
+ *
+ * require_parameters:true now forbids those endpoints, so this should never
+ * fire. It exists because the alternative is losing the command outright: the
+ * model DID decide correctly, and the decision is right there in the text.
+ * Recovering it beats asking the user to say it again.
+ *
+ * Deliberately tolerant of the exact delimiters -- the wrapper differs per model
+ * family -- and anchored only on `invoke name="..."` plus its parameters.
+ *
+ * @param {string} text
+ * @returns {Array<{id: string, name: string, args: object}>}
+ */
+export function parseLeakedToolCalls(text) {
+  const source = String(text || '');
+  if (!source) return [];
+  const calls = [];
+  const invokeRe = /invoke\s+name\s*=\s*"([a-z0-9_]+)"([\s\S]*?)(?:<\/[^>]*invoke|$)/gi;
+  let match;
+  let index = 0;
+  while ((match = invokeRe.exec(source)) !== null) {
+    const name = match[1];
+    const body = match[2] || '';
+    const args = {};
+    const paramRe = /parameter\s+name\s*=\s*"([a-zA-Z0-9_]+)"[^>]*>([\s\S]*?)<\//g;
+    let param;
+    while ((param = paramRe.exec(body)) !== null) {
+      args[param[1]] = coerceLeakedValue(param[2].trim());
+    }
+    index += 1;
+    calls.push({ id: `leaked_${index}_${name}`, name, args });
+  }
+  return calls;
+}
+
+/**
+ * Leaked parameters arrive as text even when the schema wants a boolean or a
+ * number, so `visible` comes through as the string "true" and would fail a
+ * strict tool. JSON is tried first so objects and arrays survive intact.
+ * @param {string} raw
+ * @returns {unknown}
+ */
+function coerceLeakedValue(raw) {
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (raw === 'null') return null;
+  if (raw !== '' && !Number.isNaN(Number(raw))) return Number(raw);
+  if (/^[[{]/.test(raw)) {
+    try { return JSON.parse(raw); } catch { /* fall through to the string */ }
+  }
+  return raw;
 }

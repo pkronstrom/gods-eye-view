@@ -78,6 +78,31 @@ export function stripMarkdown(text) {
     .trim();
 }
 
+/**
+ * Detect a tool call that leaked into the reply text as prose.
+ *
+ * When a provider does not implement tool calling it ignores the `tools`
+ * parameter, and the model emits its internal call syntax as content instead.
+ * Observed in production as a subtitle reading
+ * `<|DSML|tool_calls> <|DSML|invoke name="control_cctv">...`.
+ *
+ * Routing now forbids those endpoints (require_parameters), so this is the
+ * backstop: showing raw markup where an answer belongs is worse than admitting
+ * the turn was lost, because it looks like the app is broken rather than like
+ * one command needing a retry.
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function looksLikeLeakedToolCall(text) {
+  const t = String(text || '');
+  if (!t) return false;
+  return /\|?\s*DSML\s*\|/i.test(t)
+    || /<\s*\|?\s*tool_calls?\s*\|?\s*>/i.test(t)
+    || /<\s*\|?\s*invoke\s+name\s*=/i.test(t)
+    || /<function_call|<\|python_tag\|>|<tool_call>/i.test(t);
+}
+
 /** @param {string} name @returns {string} */
 function phraseFor(name) {
   return ACTION_PHRASES[name] || String(name || '').replace(/_/g, ' ');
@@ -100,6 +125,11 @@ export function describeTurn(turn) {
   const note = malformed.length
     ? `Couldn't run: ${malformed.join(', ')}`
     : '';
+
+  if (reply && looksLikeLeakedToolCall(reply)) {
+    // The command is genuinely lost -- say so plainly rather than showing markup.
+    return { kind: 'idle', text: "Didn't catch that — say it again", transcript, note };
+  }
 
   if (reply) return { kind: 'reply', text: reply, transcript, note };
 

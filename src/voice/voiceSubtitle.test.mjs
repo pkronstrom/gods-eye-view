@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { describeTurn, stripMarkdown, subtitleHoldMs } from './voiceSubtitle.js';
+import { describeTurn, looksLikeLeakedToolCall, stripMarkdown, subtitleHoldMs } from './voiceSubtitle.js';
 
 test('a spoken reply is shown verbatim alongside what was heard', () => {
   const out = describeTurn({ transcript: 'what is that', reply: 'That is the Palace of Fine Arts.' });
@@ -113,4 +113,20 @@ test('stripping markdown leaves ordinary prose and lone symbols alone', () => {
 test('a markdown-formatted reply reaches the subtitle already clean', () => {
   const out = describeTurn({ transcript: 'what is that', reply: 'It is **Helsinki**.' });
   assert.equal(out.text, 'It is Helsinki.');
+});
+
+test('leaked tool markup is never shown as though it were an answer', () => {
+  // Showing raw markup makes the app look broken; admitting the turn was lost
+  // reads as one command needing a retry.
+  const leaked = '<|DSML|tool_calls> <|DSML|invoke name="control_cctv">';
+  assert.equal(looksLikeLeakedToolCall(leaked), true);
+  const out = describeTurn({ transcript: 'show me a camera', reply: leaked });
+  assert.equal(out.kind, 'idle');
+  assert.match(out.text, /say it again/i);
+});
+
+test('a normal answer mentioning a tool name is not flagged as leakage', () => {
+  assert.equal(looksLikeLeakedToolCall('I used set_map_stack to switch that.'), false);
+  assert.equal(looksLikeLeakedToolCall('That is Helsinki.'), false);
+  assert.equal(looksLikeLeakedToolCall(''), false);
 });

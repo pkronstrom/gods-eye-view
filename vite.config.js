@@ -66,6 +66,7 @@ import {
   buildChatRequest,
   buildFollowUpRequest,
   isSilenceHallucination,
+  parseLeakedToolCalls,
   parseToolCalls,
   replyTextFrom,
   resolveVoicePipelineConfig,
@@ -7599,7 +7600,19 @@ function voicePipelineProxy() {
           return send(res, 502, { error: `chat model failed (${response.status})`, code: 'chat_failed' });
         }
         const message = JSON.parse(raw)?.choices?.[0]?.message;
-        const { calls, malformed } = parseToolCalls(message);
+        let { calls, malformed } = parseToolCalls(message);
+
+        // A provider that ignores the `tools` parameter leaves the model to
+        // emit its call syntax as prose. The decision was made correctly and is
+        // sitting in the text, so recover it rather than lose the command.
+        // provider.require_parameters should prevent this reaching us at all.
+        if (!calls.length) {
+          const recovered = parseLeakedToolCalls(replyTextFrom(message));
+          if (recovered.length) {
+            console.warn(`[voice] provider leaked tool syntax as text; recovered ${recovered.map((c) => c.name).join(', ')}`);
+            calls = recovered;
+          }
+        }
         // Logged deliberately: without this there is no way to answer "what did
         // I actually ask it?" after the fact, which is the first question asked
         // of any voice UI that misbehaves. Transcripts and tool names only --

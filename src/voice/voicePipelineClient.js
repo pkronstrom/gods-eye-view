@@ -23,12 +23,15 @@ const HISTORY_TURNS = 6;
 const MAX_UTTERANCE_MS = 30_000;
 
 /**
- * Below this a press cannot contain speech. Sending it anyway wastes a turn and
- * invites Whisper's silence hallucination -- it returns confident filler like
- * "thank you thank you", which reads as a real answer and is far more confusing
- * than nothing happening.
+ * A press shorter than this is a stray keystroke, not dictation.
+ *
+ * One second rather than a few hundred milliseconds: nobody issues a command in
+ * under a second, and an accidental Space tap that reaches Whisper comes back
+ * as confident filler ("thank you thank you") which the model then answers --
+ * the user sees a plausible reply to something they never said. Discarding is
+ * strictly better than transcribing near-silence.
  */
-const MIN_UTTERANCE_MS = 350;
+const MIN_UTTERANCE_MS = 1000;
 
 /**
  * Pick a container MediaRecorder can produce AND the transcription upstream
@@ -194,7 +197,12 @@ export function initGevVoicePipeline({
     // Whisper's silence hallucination, which reads as a real answer and is far
     // more confusing than nothing happening.
     if (!blob.size || heldMs < MIN_UTTERANCE_MS) {
-      subtitle.clear();
+      // Say why, briefly. Silently ignoring a press reads as a broken mic.
+      if (blob.size && heldMs > 0) {
+        subtitle.show('Hold a little longer', { kind: 'idle', hold: 1600 });
+      } else {
+        subtitle.clear();
+      }
       setStatus('READY', 'HOLD SPACE TO SPEAK');
       return;
     }
