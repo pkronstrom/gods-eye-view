@@ -31,7 +31,21 @@ RUN npm run build
 # terrain-heights, launch-library). Create it owned by uid 1000 BEFORE dropping
 # privileges -- a root-owned directory here fails silently: the proxies keep
 # serving, they just never cache, and nothing logs it.
-RUN mkdir -p /app/.gev-cache && chown -R node:node /app/.gev-cache
+# Two writable paths are needed at runtime, and both are root-owned because
+# npm ci and COPY ran as root:
+#
+#  1. .gev-cache -- several API proxies persist cache and upstream rate budgets
+#     here. A root-owned directory fails SILENTLY: the proxies keep serving and
+#     simply never cache.
+#  2. node_modules/.vite-temp -- vite bundles vite.config.js on every startup
+#     and writes the transpiled result here first. A root-owned directory is a
+#     hard crash loop: "EACCES ... vite.config.js.timestamp-*.mjs".
+#
+# Only the directory entries are chowned, not the ~800 MB tree beneath
+# node_modules, so this stays a cheap layer.
+RUN mkdir -p /app/.gev-cache /app/node_modules/.vite-temp \
+ && chown -R node:node /app/.gev-cache \
+ && chown node:node /app/node_modules /app/node_modules/.vite-temp
 VOLUME /app/.gev-cache
 
 USER node
